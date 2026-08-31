@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Huawei Device Co., Ltd.
+ * Copyright (c) 2025-2026 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -12,7 +12,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <charconv>
 #include <sstream>
+#include <system_error>
 #include <iomanip>
 #include "calendar_log.h"
 #include "cj_native_util.h"
@@ -573,12 +575,19 @@ std::optional<EventService> ResultSetToEventService(DataShareResultSetPtr &resul
 
 int StringToInt(const std::string &str)
 {
-    try {
-        return std::stoi(str);
-    } catch (std::exception &ex) {
+    if (str.empty()) {
         LOG_ERROR("StringToInt conversion fail, str: %{public}s", str.c_str());
         return 0;
     }
+    int value = 0;
+    const char *first = str.data();
+    const char *last = first + str.size();
+    auto result = std::from_chars(first, last, value);
+    if (result.ec != std::errc() || result.ptr != last) {
+        LOG_ERROR("StringToInt conversion fail, str: %{public}s", str.c_str());
+        return 0;
+    }
+    return value;
 }
 
 std::time_t TimeToUTC(const std::string &strTime)
