@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Huawei Device Co., Ltd.
+ * Copyright (c) 2023-2026 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -16,6 +16,7 @@
 #include <iomanip>
 #include "calendar_log.h"
 #include "native_util.h"
+#include "parse_rrule_int.h"
 #include <ctime>
 #include <numeric>
 
@@ -578,16 +579,6 @@ std::optional<EventService> ResultSetToEventService(DataShareResultSetPtr &resul
     return std::make_optional<EventService>(out);
 }
 
-int StringToInt(const std::string &str)
-{
-    try {
-        return std::stoi(str);
-    } catch (std::exception &ex) {
-        LOG_ERROR("StringToInt conversion fail, str: %{public}s", str.c_str());
-        return 0;
-    }
-}
-
 std::time_t TimeToUTC(const std::string &strTime)
 {
     const int baseYear = 1900;
@@ -609,13 +600,31 @@ std::time_t TimeToUTC(const std::string &strTime)
         LOG_DEBUG("strTime length error");
         return 0;
     }
-    expireTime.tm_year = StringToInt(strTime.substr(0, yearOffset)) - baseYear;
-    expireTime.tm_mon = (StringToInt(strTime.substr(monBase, offset)) + monRectify) % monCount;
-    expireTime.tm_mday = StringToInt(strTime.substr(dayBase, offset));
+    int32_t year = 0;
+    int32_t mon = 0;
+    int32_t day = 0;
+    if (!ParseRruleInt(strTime.substr(0, yearOffset), year) ||
+        !ParseRruleInt(strTime.substr(monBase, offset), mon) ||
+        !ParseRruleInt(strTime.substr(dayBase, offset), day)) {
+        LOG_ERROR("TimeToUTC invalid date: %{public}s", strTime.c_str());
+        return 0;
+    }
+    expireTime.tm_year = year - baseYear;
+    expireTime.tm_mon = (mon + monRectify) % monCount;
+    expireTime.tm_mday = day;
     if (strTime.find("T") != std::string::npos && strTime.length() >= timeStrLen) {
-        expireTime.tm_hour = StringToInt(strTime.substr(hourBase, offset));
-        expireTime.tm_min = StringToInt(strTime.substr(minBase, offset));
-        expireTime.tm_sec = StringToInt(strTime.substr(secBase,  offset));
+        int32_t hour = 0;
+        int32_t minute = 0;
+        int32_t sec = 0;
+        if (!ParseRruleInt(strTime.substr(hourBase, offset), hour) ||
+            !ParseRruleInt(strTime.substr(minBase, offset), minute) ||
+            !ParseRruleInt(strTime.substr(secBase, offset), sec)) {
+            LOG_ERROR("TimeToUTC invalid time: %{public}s", strTime.c_str());
+            return 0;
+        }
+        expireTime.tm_hour = hour;
+        expireTime.tm_min = minute;
+        expireTime.tm_sec = sec;
     } else {
         expireTime.tm_hour = 0;
         expireTime.tm_min = 0;
@@ -709,7 +718,12 @@ void SetVecNum(std::optional<std::vector<int64_t>> &ruleVec, const std::string &
 {
     std::vector<std::string> weekNumList = SplitString(ruleStr, ",");
     for (const auto &weekNum : weekNumList) {
-        ruleVec->push_back(StringToInt(weekNum));
+        int32_t value = 0;
+        if (!ParseRruleInt(weekNum, value)) {
+            LOG_ERROR("invalid rrule integer: %{public}s", weekNum.c_str());
+            continue;
+        }
+        ruleVec->push_back(value);
     }
 }
 
@@ -722,11 +736,21 @@ void SetRRuleValue(const std::map<std::string, std::string> &ruleMap, Recurrence
             continue;
         }
         if (iter->first == "COUNT") {
-            out.count = std::make_optional<int64_t>(StringToInt(iter->second));
+            int32_t count = 0;
+            if (!ParseRruleInt(iter->second, count)) {
+                LOG_ERROR("invalid rrule COUNT: %{public}s", iter->second.c_str());
+                continue;
+            }
+            out.count = std::make_optional<int64_t>(count);
             continue;
         }
         if (iter->first == "INTERVAL") {
-            out.interval = std::make_optional<int64_t>(StringToInt(iter->second));
+            int32_t interval = 0;
+            if (!ParseRruleInt(iter->second, interval)) {
+                LOG_ERROR("invalid rrule INTERVAL: %{public}s", iter->second.c_str());
+                continue;
+            }
+            out.interval = std::make_optional<int64_t>(interval);
             continue;
         }
         if (iter->first == "UNTIL") {
@@ -764,12 +788,21 @@ void SetByDayOfRRule(const std::vector<std::string> &weekDayList, RecurrenceRule
     for (const auto &weekday : weekDayList) {
         if (weekday.length() > weekStrLen) {
             std::string weekDayStr = weekday.substr(weekday.length() - weekStrLen, weekStrLen);
-            std::string WeekNumStr = weekday.substr(0, weekday.length() - weekStrLen);
+            std::string weekNumStr = weekday.substr(0, weekday.length() - weekStrLen);
+            // RFC 5545 BYDAY ordinals may use a leading '+' (e.g. +1MO).
+            if (!weekNumStr.empty() && weekNumStr[0] == '+') {
+                weekNumStr.erase(0, 1);
+            }
             auto it = std::find(dayOfWeekList.begin(), dayOfWeekList.end(), weekDayStr);
             if (it != dayOfWeekList.end()) {
+                int32_t weekNum = 0;
+                if (!ParseRruleInt(weekNumStr, weekNum)) {
+                    LOG_ERROR("invalid rrule BYDAY ordinal: %{public}s", weekday.c_str());
+                    continue;
+                }
                 int dayNum = it - dayOfWeekList.begin();
                 out.daysOfWeek->push_back(dayNum + 1);
-                out.weeksOfMonth->push_back(StringToInt(WeekNumStr));
+                out.weeksOfMonth->push_back(weekNum);
             }
         } else if (weekday.length() == weekStrLen) {
             auto it = std::find(dayOfWeekList.begin(), dayOfWeekList.end(), weekday);
